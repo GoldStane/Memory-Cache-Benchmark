@@ -2,10 +2,12 @@
 
 ## Scope
 
-The current experiment measures the elapsed time of a sequential checksum scan
-over a fixed 1 MiB vector of `std::uint64_t` values. On the current macOS target,
-this is 1,048,576 bytes and 131,072 elements. One scan visits every element in
-order and returns an unsigned 64-bit sum.
+The experiment sweeps 17 powers-of-two working-set sizes in ascending order,
+from 4 KiB (4,096 bytes) through 256 MiB (268,435,456 bytes), inclusive. Each
+size uses a fresh vector of `std::uint64_t` values with element count
+`bytes / sizeof(std::uint64_t)`: 512 through 33,554,432 on the current target.
+One scan visits every element in order and returns an unsigned 64-bit sum.
+Each measured trial batches 100 scans of the same vector.
 
 Random values do not imply random access: the access pattern is sequential.
 Initialisation and warm-up touch the data before the measured trials. This is a
@@ -13,21 +15,25 @@ repeated-access experiment, not a guaranteed cold-cache measurement.
 
 ## Current procedure
 
-1. Reserve storage for 20 durations and 20 checksums.
-2. Allocate the input vector.
-3. Initialise the input with `std::mt19937_64`, seed 55, and a uniform integer
-   distribution over the inclusive range 0–1000. Accumulate a reference checksum
-   during initialisation, independently of the scan function.
-4. Time one warm-up scan and validate its checksum. A mismatch ends the program
-   with status 1 before measured trials begin.
-5. Run 20 trials. In each trial, read `std::chrono::steady_clock` immediately
-   before and after the scan function call. Store the duration and returned
-   checksum in the result vectors after the finish timestamp.
-6. Validate all measured checksums. A mismatch invalidates the entire run: report
-   the failing trial and expected/actual values, return status 1, and omit the
-   performance summary. Do not silently discard a failed trial.
-7. Sort durations, calculate summary statistics, and print the warm-up and trial
-   results in separate sections. Successful execution returns status 0.
+For each working-set size:
+
+1. Reserve storage for 20 durations and 20 batch checksums, and allocate the input.
+2. Initialise a new `std::mt19937_64` with seed 55 and a uniform integer
+   distribution over 0–1000. Accumulate a single-scan reference checksum during
+   input initialisation, independently of the scan function.
+3. Run one untimed warm-up scan and compare it with the single-scan reference.
+4. Run 20 trials. Reset the batch checksum before the start timestamp. Between
+   two `steady_clock::now()` calls, perform 100 scans and add each returned
+   checksum to the batch checksum. Store duration and checksum after timing.
+5. Calculate the expected batch checksum as the single-scan reference times 100
+   and validate all 20 recorded batch checksums outside timing.
+6. Sort the durations and print one summary row for this size. Fresh vectors and
+   checksums are used for the next size.
+
+A warm-up or batch mismatch prints an error and exits with status 1, omitting
+that size's summary and all later sizes. Earlier validated rows may already have
+been printed; an incomplete sweep must not be treated as a successful full run.
+Successful completion returns status 0. Warm-up results are not printed.
 
 The fixed engine seed supports repeatability within the same implementation.
 The distribution's mapping is not guaranteed identical across different C++
@@ -35,18 +41,18 @@ standard-library implementations; record the toolchain for cross-machine work.
 
 ## Timing boundaries
 
-The timed region contains the scan function call, including call/return overhead
-that remains after optimisation. Clock-reading overhead also affects the observed
-interval. Compiler-generated bookkeeping, such as saving the returned checksum
-to the stack before the finish clock call, can also fall inside the interval.
-Allocation, random generation, reference-checksum generation,
-result-vector insertion, validation, sorting, and printing are outside it.
+The timed region contains 100 scan calls, batch-checksum accumulation, and inner
+loop control, including any call/return and bookkeeping overhead that remains
+after optimisation. Clock-reading overhead also affects the interval. Allocation,
+random generation, reference generation, result-vector insertion, validation,
+sorting, and printing occur outside timing.
 
-Durations are converted to integer nanoseconds. That unit does not imply that the
-clock has one-nanosecond resolution or accuracy. Very short scans can be dominated
-by measurement overhead. A later size sweep must assess whether several scans
-per measurement are needed, and must count all processed elements when
-normalising such measurements.
+Durations are converted to integer nanoseconds; this does not imply a clock with
+one-nanosecond resolution or accuracy. Batching amortises clock overhead across
+100 scans. The batch count is fixed for every size, not adaptively calibrated.
+Compare empty timing intervals with batch durations and reassess the count when
+changing the experiment. Batching repeats access to the same input; it does not
+flush caches or create independent cold-cache scans.
 
 ## Clock-overhead diagnostic
 
@@ -61,38 +67,40 @@ values using floating-point division. There is no separate warm-up phase.
 This measures an approximate empty timing interval, not the exact cost of two
 complete clock calls or all overhead surrounding a scan. Clock resolution can
 produce zero intervals; scheduling and other interruptions can produce outliers.
-Compare typical empty intervals with scan durations from the same environment.
+Compare typical empty intervals with batch durations from the same environment.
 Do not automatically subtract this baseline from measured scans or infer clock
 resolution from a single sample. Repeat complete runs before drawing conclusions.
 
 No timing threshold is enforced, and this diagnostic is not registered with
-CTest. If later small-input measurements approach the empty-interval baseline,
-consider batching scans, count all processed elements when normalising, and
-verify that repeated work survives optimisation.
+CTest. If batch durations approach the empty-interval baseline, reconsider the
+scans-per-trial count and verify that repeated work survives optimisation.
 
 ## Statistics and units
 
-- Minimum and maximum: smallest and largest measured trial durations.
-- Median: the middle sorted duration, or the average of the two middle durations
-  for an even number of trials.
-- Mean: sum of trial durations divided by the number of trials using
-  floating-point division.
-- Median ns/element: median scan duration in nanoseconds divided by the number
-  of elements scanned once.
+- Minimum and maximum: smallest and largest of the 20 batch durations per size.
+- Median: average of the two middle sorted durations for the current even trial
+  count, using floating-point division.
+- Median ns/element: median batch duration in ns / (100 × element count).
+- Useful GB/s: (100 × input bytes) / median batch duration in ns. Bytes/ns is
+  numerically equivalent to decimal GB/s.
 
-The warm-up is excluded from these trial statistics. Durations are currently
-sorted in place, so their chronological order is not retained. Preserve raw
-trial order before sorting if later exporting per-trial data or diagnosing drift.
+The console header reports 20 trials, 100 scans per trial, and one warm-up scan.
+Rows contain size in KiB, elements, min/median/max batch ns, median ns/element,
+and useful GB/s. Median batch times use one decimal place; normalised metrics
+use three. These display precisions do not imply corresponding clock accuracy.
+Neither the mean nor warm-up timings are reported. Min/max describe observed
+spread, not confidence intervals. Repeat full sweeps to assess run-to-run variation.
 
-KiB means 1,024 bytes and MiB means 1,048,576 bytes. A planned useful-read-throughput
-metric is total bytes processed / elapsed seconds / 1,000,000,000, expressed in
-decimal GB/s. It is not implemented yet. Useful bytes count element data consumed
-by the scan, not measured hardware memory traffic.
+Durations are sorted in place, so their chronological order is not retained.
+Preserve raw trial order before sorting if later exporting per-trial data.
+KiB means 1,024 bytes and MiB means 1,048,576 bytes. Useful bytes count input
+element data consumed across all scans, not measured hardware memory traffic.
 
 ## Correctness and optimisation
 
-Every recorded checksum is checked against the independently accumulated
-reference. This is necessary for correctness, but does not by itself guarantee
+Every recorded batch checksum is checked against 100 times the independently
+accumulated single-scan reference. Individual scan results within a batch are
+not stored or checked separately; compensating errors could preserve the total. This is necessary for correctness, but does not by itself guarantee
 that every source-level scan survives compiler optimisation as intended.
 Storing or printing results, and placing the scan in another source file, are
 not universal optimisation barriers, especially with link-time optimisation.
@@ -102,17 +110,22 @@ appropriate benchmark harness and understand its optimisation controls. Record
 whether link-time optimisation is enabled. Do not disable optimisation simply
 to obtain plausible-looking timings: that changes the operation being measured.
 
-### Inspected Release build
+### Assembly checks during development
 
 On 2026-10-04, an AppleClang 21.0.0.21000334 ARM64 Release build using
-`-O3 -DNDEBUG` without link-time optimisation was inspected. The measured loop
+`-O3 -DNDEBUG` without link-time optimisation was inspected. In the earlier single-scan baseline, the measured loop
 retained 20 calls to `sequential_scan`, each between two clock calls. The scan
 used vector loads and integer SIMD additions to process eight 64-bit elements
 (64 bytes) per main loop iteration, followed by reduction of the partial sums.
 For the 131,072-element input, this is 16,384 vector-loop iterations per scan.
 Normalisation still uses 131,072 elements, not the assembly-loop iteration count.
 
-This observation applies to the inspected build, not every compiler or future
+After batching was introduced, a separate Release inspection confirmed that
+the inner loop retained 100 scan calls between the clock readings, accumulating
+their results rather than reusing one scan. Current normalisation counts
+100 times the input element count per trial.
+
+These observations apply to the inspected builds, not every compiler or future
 configuration. Vectorisation is intended for this optimised sequential scan;
 it does not remove elements from the workload. Recheck the generated code after
 changes to the scan, batching, compiler options, or link-time optimisation.
@@ -141,9 +154,13 @@ alone is not a complete reproducibility record.
 Elapsed scan time includes effects of generated instructions, vectorisation,
 cache behaviour, prefetching, CPU frequency, scheduling, and other system activity.
 Repeated scans may be served by caches and do not directly measure RAM bandwidth.
-One 1 MiB input cannot establish cache boundaries or describe the whole memory
-hierarchy. Even a future curve over many sizes will require care before attributing
-changes to individual cache levels.
+The size sweep does not directly identify cache boundaries. Changes across sizes
+can also reflect prefetching, vectorisation, CPU frequency, scheduling, and
+background load. Sizes always run in ascending order, so time-dependent changes
+can affect the apparent curve. One warm-up does not guarantee cache residency
+or stable CPU frequency, especially for working sets larger than the caches.
 
 The current benchmark is a learning baseline. CTest covers empty, single-element,
-and multi-element scan inputs. A size sweep, CSV export, and plots remain planned work.
+and multi-element scan inputs; it does not test the sweep statistics or impose
+performance thresholds. The size sweep and useful throughput are implemented.
+CSV export, plots, and automatic environment-metadata collection remain planned.

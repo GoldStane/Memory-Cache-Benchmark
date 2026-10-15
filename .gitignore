@@ -71,3 +71,4 @@ Testing/
 .DS_Store
 .vscode/
 AGENTS.md
+data/
