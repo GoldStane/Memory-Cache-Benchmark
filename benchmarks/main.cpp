@@ -18,12 +18,12 @@ int main() {
     // formatting
     constexpr int size_width = 10;
     constexpr int elements_width = 12;
-    constexpr int scans_number_width = 14;
-    constexpr int timing_width = 17;
-    constexpr int per_element_width = 20;
+    constexpr int scans_number_width = 15;
+    constexpr int timing_width = 15;
+    constexpr int per_element_width = 16;
     constexpr int throughput_width = 14;
     constexpr int table_width = size_width + elements_width + scans_number_width + 3 * timing_width + 
-                    per_element_width + throughput_width + 6 * 3;
+                    per_element_width + throughput_width + 7 * 3;
     const std::string separator(table_width, '-');
 
     const std::filesystem::path directory{"data"};
@@ -36,7 +36,7 @@ int main() {
         return 1;
     }
 
-    output << "size_kib,elements,min_batch_ns,median_batch_ns,max_batch_ns,median_ns_element,useful_gbs\n"; // headers
+    output << "size_kib,elements,scans_per_trial,min_batch_ns,median_batch_ns,max_batch_ns,median_ns_element,useful_gbs\n"; // headers
 
     std::cout << "Trials per size: " << trials
                 << " | Warm-up scans: 1\n\n"
@@ -163,6 +163,7 @@ int main() {
         output << std::setprecision(12)
                << bytes / 1024 << ','
                << vec.size() << ','
+               << scans_per_trial << ','
                << time_vec.front().count() << ','
                << median.count() << ','
                << time_vec.back().count() << ','
